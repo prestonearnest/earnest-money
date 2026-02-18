@@ -26,7 +26,11 @@ export default function App() {
     return localStorage.getItem(LS_KEY) === '1'
   })
 
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('bbp_theme_v1') as any) || 'light')
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('bbp_theme_v1') as 'light' | 'dark' | null
+    if (saved === 'light' || saved === 'dark') return saved
+    return window.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light'
+  })
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('bbp_theme_v1', theme)
