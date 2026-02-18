@@ -225,15 +225,43 @@ export default function App() {
   }
 
   return (
-    <div className="wrap">
-      <header className="header">
-        <div>
-          <h1>Bank Statement → Bills & Recurring Charges</h1>
-          <p className="sub">Local-only, in your browser. Upload CSV exports (U.S. Bank works fine). For info purposes only.</p>
+    <div className="appShell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="logo" />
+          <div>
+            <div>Budget Builder</div>
+            <div className="sub" style={{ marginTop: 2 }}>Plan your month</div>
+          </div>
         </div>
-      </header>
 
-      <section className="topbar">
+        <nav className="nav">
+          {(
+            [
+              { id: 'review', label: 'Budget' },
+              { id: 'bills', label: 'Bills' },
+              { id: 'subs', label: 'Subscriptions' },
+              { id: 'plan', label: 'Plan' },
+              { id: 'upload', label: 'Upload' },
+            ] as const
+          ).map((t) => (
+            <button key={t.id} className={`navItem ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)} type="button">
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="main">
+        <div className="wrap">
+          <header className="header">
+            <div>
+              <h1>January</h1>
+              <p className="sub">Your budget workspace (prototype)</p>
+            </div>
+          </header>
+
+          <section className="topbar">
         <div className="tabs">
           {(
             [
@@ -512,8 +540,26 @@ export default function App() {
         </section>
       )}
 
-      <footer className="footer">PDF parsing can be added next (via PDF.js). CSV will be the most reliable.</footer>
+      <footer className="footer">CSV is the most reliable. Cloud save requires Supabase configuration.</footer>
+
+      <div className="bottomNav">
+        {(
+          [
+            { id: 'review', label: 'Budget' },
+            { id: 'bills', label: 'Bills' },
+            { id: 'subs', label: 'Subs' },
+            { id: 'plan', label: 'Plan' },
+            { id: 'upload', label: 'Upload' },
+          ] as const
+        ).map((t) => (
+          <button key={t.id} className={`tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)} type="button">
+            {t.label}
+          </button>
+        ))}
+      </div>
     </div>
+  </main>
+</div>
   )
 }
 
