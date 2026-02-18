@@ -3,6 +3,7 @@ import './App.css'
 import { detectRecurring, guessColumnMap, parseCsvFiles, type ColumnMap, type RecurringGroup, type Tx } from './lib'
 import { supabase } from './supabase'
 import { DEFAULT_CATEGORIES, type Category } from './categories'
+import { addMonths, format, getDay, getDaysInMonth, startOfMonth } from 'date-fns'
 
 type Stage = 'upload' | 'map' | 'results'
 
@@ -72,6 +73,7 @@ export default function App() {
 
   const [stage, setStage] = useState<Stage>('upload')
   const [files, setFiles] = useState<File[]>([])
+  const [month, setMonth] = useState<Date>(() => startOfMonth(new Date()))
   const [headers, setHeaders] = useState<string[]>([])
   const [columnMap, setColumnMap] = useState<ColumnMap | null>(null)
   const [expenseSign, setExpenseSign] = useState<'auto' | 'negative' | 'positive'>('auto')
@@ -266,8 +268,19 @@ export default function App() {
         <div className="wrap">
           <header className="header">
             <div>
-              <h1>January</h1>
-              <p className="sub">Your budget workspace (prototype)</p>
+              <h1 className="monthTitle">
+                {format(month, 'LLLL yyyy')}{' '}
+                <button className="link" type="button" onClick={() => setMonth((m) => addMonths(m, -1))}>
+                  ◀
+                </button>
+                <button className="link" type="button" onClick={() => setMonth(startOfMonth(new Date()))}>
+                  Today
+                </button>
+                <button className="link" type="button" onClick={() => setMonth((m) => addMonths(m, 1))}>
+                  ▶
+                </button>
+              </h1>
+              <p className="sub">Plan bills, subscriptions, and your month.</p>
             </div>
           </header>
 
@@ -481,8 +494,13 @@ export default function App() {
 
           {tab === 'bills' && (
             <div className="section">
-              <h3>Bills</h3>
+              <h3>Upcoming (next 14 days)</h3>
               <UpcomingList kind="bill" groups={decidedGroups as any} />
+
+              <h3 style={{ marginTop: 16 }}>Bills calendar</h3>
+              <BillsCalendar month={month} groups={decidedGroups as any} />
+
+              <h3 style={{ marginTop: 16 }}>All bills</h3>
               <div className="cards" style={{ marginTop: 12 }}>
                 {decidedGroups
                   .filter((g: any) => g.kind === 'bill')
@@ -672,12 +690,21 @@ function RecurringCard({
 }
 
 function UpcomingList({ kind, groups }: { kind: 'bill' | 'subscription'; groups: Array<RecurringGroup & { _decision?: Decision }> }) {
+  const now = new Date()
+  const today = now.getDate()
+
   const items = groups
     .filter((g: any) => g.kind === kind && g.usualDayOfMonth)
-    .slice()
-    .sort((a: any, b: any) => (a.usualDayOfMonth ?? 99) - (b.usualDayOfMonth ?? 99))
+    .map((g: any) => {
+      const d = g.usualDayOfMonth as number
+      // crude: upcoming within 14 days in the current month
+      const delta = d >= today ? d - today : 999
+      return { ...g, _delta: delta }
+    })
+    .filter((g: any) => g._delta <= 14)
+    .sort((a: any, b: any) => a._delta - b._delta)
 
-  if (items.length === 0) return <div className="empty">No upcoming dates yet (needs a monthly pattern).</div>
+  if (items.length === 0) return <div className="empty">No bills due in the next 14 days (based on inferred posting day).</div>
 
   return (
     <div className="upcoming">
@@ -690,6 +717,62 @@ function UpcomingList({ kind, groups }: { kind: 'bill' | 'subscription'; groups:
           <div className="amt">${round2(g.typicalAmount)}</div>
         </div>
       ))}
+    </div>
+  )
+}
+
+function BillsCalendar({ month, groups }: { month: Date; groups: Array<RecurringGroup & { _decision?: Decision }> }) {
+  const start = startOfMonth(month)
+  const daysInMonth = getDaysInMonth(month)
+  const startWeekday = getDay(start) // 0=Sun
+
+  const byDay = new Map<number, Array<{ merchant: string; amount: number }>>()
+  for (const g of groups as any[]) {
+    if (g.kind !== 'bill') continue
+    if (g.cadence !== 'monthly') continue
+    if (!g.usualDayOfMonth) continue
+    const d = Math.min(daysInMonth, Math.max(1, g.usualDayOfMonth))
+    const arr = byDay.get(d) ?? []
+    arr.push({ merchant: g.merchant, amount: g.typicalAmount })
+    byDay.set(d, arr)
+  }
+
+  // 6 rows x 7 cols
+  const cells: Array<{ day: number | null }> = []
+  for (let i = 0; i < startWeekday; i++) cells.push({ day: null })
+  for (let d = 1; d <= daysInMonth; d++) cells.push({ day: d })
+  while (cells.length % 7 !== 0) cells.push({ day: null })
+  while (cells.length < 42) cells.push({ day: null })
+
+  const weekLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+
+  return (
+    <div className="cal">
+      <div className="calHeader">
+        {weekLabels.map((w) => (
+          <div key={w} className="calDow">
+            {w}
+          </div>
+        ))}
+      </div>
+      <div className="calGrid">
+        {cells.map((c, idx) => {
+          if (!c.day) return <div key={idx} className="calCell muted" />
+          const items = byDay.get(c.day) ?? []
+          return (
+            <div key={idx} className="calCell">
+              <div className="calDay">{c.day}</div>
+              {items.slice(0, 3).map((it, i) => (
+                <div key={i} className="calItem">
+                  <span className="calMerchant">{it.merchant}</span>
+                  <span className="calAmt">${round2(it.amount)}</span>
+                </div>
+              ))}
+              {items.length > 3 && <div className="calMore">+{items.length - 3} more</div>}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
