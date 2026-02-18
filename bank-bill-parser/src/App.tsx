@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { detectRecurring, guessColumnMap, parseCsvFiles, type ColumnMap, type RecurringGroup, type Tx } from './lib'
+import { supabase } from './supabase'
+import { DEFAULT_CATEGORIES, type Category } from './categories'
 
 type Stage = 'upload' | 'map' | 'results'
 
@@ -8,9 +10,15 @@ type Decision = 'bill' | 'subscription' | 'no' | 'unset'
 
 type DecisionsMap = Record<string, Decision>
 
+type CategoryMap = Record<string, Category>
+
+type Tab = 'review' | 'bills' | 'subs' | 'plan' | 'upload'
+
 const GATE_PASSWORD = import.meta.env.VITE_GATE_PASSWORD as string | undefined
 const LS_KEY = 'bbp_authed_v1'
 const LS_DECISIONS = 'bbp_decisions_v1'
+const LS_CATEGORIES = 'bbp_categories_v1'
+const LS_TAB = 'bbp_tab_v1'
 
 export default function App() {
   const [authed, setAuthed] = useState(() => {
@@ -18,9 +26,19 @@ export default function App() {
     return localStorage.getItem(LS_KEY) === '1'
   })
 
+  const [tab, setTab] = useState<Tab>(() => (localStorage.getItem(LS_TAB) as Tab) || 'review')
+
   const [decisions, setDecisions] = useState<DecisionsMap>(() => {
     try {
       return JSON.parse(localStorage.getItem(LS_DECISIONS) ?? '{}') as DecisionsMap
+    } catch {
+      return {}
+    }
+  })
+
+  const [categoryMap, setCategoryMap] = useState<CategoryMap>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(LS_CATEGORIES) ?? '{}') as CategoryMap
     } catch {
       return {}
     }
@@ -32,6 +50,16 @@ export default function App() {
     localStorage.setItem(LS_DECISIONS, JSON.stringify(next))
   }
 
+  function setCategory(key: string, cat: Category) {
+    const next = { ...categoryMap, [key]: cat }
+    setCategoryMap(next)
+    localStorage.setItem(LS_CATEGORIES, JSON.stringify(next))
+  }
+
+  useEffect(() => {
+    localStorage.setItem(LS_TAB, tab)
+  }, [tab])
+
   const [stage, setStage] = useState<Stage>('upload')
   const [files, setFiles] = useState<File[]>([])
   const [headers, setHeaders] = useState<string[]>([])
@@ -40,6 +68,9 @@ export default function App() {
 
   const [txs, setTxs] = useState<Tx[]>([])
   const [groups, setGroups] = useState<RecurringGroup[]>([])
+
+  const [userEmail, setUserEmail] = useState<string>('')
+  const [authStatus, setAuthStatus] = useState<'disabled' | 'signedout' | 'signedin'>('disabled')
   const [minCount, setMinCount] = useState(3)
   const [query, setQuery] = useState('')
 
@@ -53,9 +84,10 @@ export default function App() {
     return filtered.map((g) => {
       const d = decisions[g.merchantKey] ?? 'unset'
       const kind = d === 'bill' ? 'bill' : d === 'subscription' ? 'subscription' : d === 'no' ? 'unknown' : g.kind
-      return { ...g, kind, _decision: d }
+      const cat = categoryMap[g.merchantKey]
+      return { ...g, kind, _decision: d, _category: cat }
     })
-  }, [filtered, decisions])
+  }, [filtered, decisions, categoryMap])
 
   async function readFirstHeaders(file: File) {
     const text = await file.text()
@@ -86,6 +118,7 @@ export default function App() {
     const recurring = detectRecurring(parsed, { minCount })
     setGroups(recurring)
     setStage('results')
+    setTab('review')
   }
 
   function downloadCsv() {
@@ -109,12 +142,68 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  useEffect(() => {
+    if (!supabase) {
+      setAuthStatus('disabled')
+      return
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setAuthStatus(data.session ? 'signedin' : 'signedout')
+    })
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      setAuthStatus(session ? 'signedin' : 'signedout')
+    })
+
+    return () => {
+      sub.subscription.unsubscribe()
+    }
+  }, [])
+
+  async function saveToCloud() {
+    if (!supabase) return alert('Cloud sync not configured (missing Supabase env vars).')
+    const { data } = await supabase.auth.getSession()
+    if (!data.session) return alert('Sign in first.')
+
+    const payload = {
+      decisions,
+      categories: categoryMap,
+      updatedAt: new Date().toISOString(),
+    }
+
+    const { error } = await supabase.from('budget_states').upsert({ user_id: data.session.user.id, payload }, { onConflict: 'user_id' })
+    if (error) alert(`Cloud save failed: ${error.message}`)
+    else alert('Saved to cloud.')
+  }
+
+  async function loadFromCloud() {
+    if (!supabase) return alert('Cloud sync not configured (missing Supabase env vars).')
+    const { data } = await supabase.auth.getSession()
+    if (!data.session) return alert('Sign in first.')
+
+    const { data: row, error } = await supabase.from('budget_states').select('payload').eq('user_id', data.session.user.id).maybeSingle()
+    if (error) return alert(`Cloud load failed: ${error.message}`)
+    if (!row?.payload) return alert('No saved data yet.')
+
+    const p = row.payload as any
+    if (p.decisions) {
+      setDecisions(p.decisions)
+      localStorage.setItem(LS_DECISIONS, JSON.stringify(p.decisions))
+    }
+    if (p.categories) {
+      setCategoryMap(p.categories)
+      localStorage.setItem(LS_CATEGORIES, JSON.stringify(p.categories))
+    }
+    alert('Loaded from cloud.')
+  }
+
   if (!authed) {
     return (
       <div className="wrap">
         <header className="header">
           <div>
-            <h1>Bank Statement → Bills & Recurring Charges</h1>
+            <h1>Budget Builder</h1>
             <p className="sub">This app is password-protected.</p>
           </div>
         </header>
@@ -144,15 +233,81 @@ export default function App() {
         </div>
       </header>
 
-      {stage === 'upload' && (
+      <section className="topbar">
+        <div className="tabs">
+          {(
+            [
+              { id: 'review', label: 'Review' },
+              { id: 'bills', label: 'Bills' },
+              { id: 'subs', label: 'Subscriptions' },
+              { id: 'plan', label: 'Plan' },
+              { id: 'upload', label: 'Upload' },
+            ] as const
+          ).map((t) => (
+            <button key={t.id} className={`tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)} type="button">
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="auth">
+          {authStatus === 'disabled' && <span className="small">Cloud: not configured</span>}
+          {authStatus !== 'disabled' && (
+            <>
+              {authStatus === 'signedin' ? (
+                <>
+                  <button className="btn secondary" onClick={() => void loadFromCloud()} type="button">
+                    Load
+                  </button>
+                  <button className="btn" onClick={() => void saveToCloud()} type="button">
+                    Save
+                  </button>
+                  <button
+                    className="btn secondary"
+                    onClick={() =>
+                      void (async () => {
+                        await supabase?.auth.signOut()
+                      })()
+                    }
+                    type="button"
+                  >
+                    Sign out
+                  </button>
+                </>
+              ) : (
+                <>
+                  <input className="email" placeholder="Email for magic link" value={userEmail} onChange={(e) => setUserEmail(e.target.value)} />
+                  <button
+                    className="btn"
+                    onClick={() =>
+                      void (async () => {
+                        const email = userEmail.trim()
+                        if (!email) return
+                        const { error } = await supabase!.auth.signInWithOtp({ email })
+                        if (error) alert(error.message)
+                        else alert('Check your email for the sign-in link.')
+                      })()
+                    }
+                    type="button"
+                  >
+                    Sign in
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </section>
+
+      {stage === 'upload' && tab === 'upload' && (
         <section className="card">
-          <h2>1) Upload CSVs</h2>
-          <p>Download transactions from U.S. Bank as <b>CSV</b> (recommended). Upload up to ~3 months.</p>
+          <h2>Upload statements (CSV)</h2>
+          <p>Upload 1–3 months of U.S. Bank CSV exports.</p>
           <input type="file" accept=".csv,text/csv" multiple onChange={(e) => void onChooseFiles(e.target.files)} />
         </section>
       )}
 
-      {stage === 'map' && (
+      {stage === 'map' && tab === 'upload' && (
         <section className="card">
           <h2>2) Map columns</h2>
           <div className="grid">
@@ -256,47 +411,104 @@ export default function App() {
           </div>
 
           <p className="small" style={{ marginTop: 10 }}>
-            Tap <b>Yes: Bill</b> / <b>Yes: Subscription</b> / <b>No</b> on each card to confirm. “Due date” usually isn’t present in bank CSVs;
-            for monthly items we infer the <b>usual posting day-of-month</b>.
+            Review flow: confirm <b>Bill</b> / <b>Subscription</b> / <b>Not recurring</b>. For monthly items we infer “due” as the <b>usual posting day</b>.
           </p>
 
-          <div className="section">
-            <h3>Bills</h3>
-            <div className="cards">
-              {decidedGroups
-                .filter((g: any) => g.kind === 'bill')
-                .map((g: any) => (
-                  <RecurringCard key={g.merchantKey} g={g} decision={g._decision} onDecision={setDecision} />
-                ))}
-              {decidedGroups.filter((g: any) => g.kind === 'bill').length === 0 && <div className="empty">No bill items yet.</div>}
+          {tab === 'review' && (
+            <div className="section">
+              <h3>Needs review</h3>
+              <div className="cards">
+                {decidedGroups
+                  .filter((g: any) => g._decision === 'unset')
+                  .sort((a: any, b: any) => (b.confidence ?? 0) - (a.confidence ?? 0))
+                  .map((g: any) => (
+                    <RecurringCard
+                      key={g.merchantKey}
+                      g={g}
+                      decision={g._decision}
+                      category={g._category}
+                      onDecision={setDecision}
+                      onCategory={setCategory}
+                    />
+                  ))}
+                {decidedGroups.filter((g: any) => g._decision === 'unset').length === 0 && <div className="empty">Nothing to review.</div>}
+              </div>
             </div>
-          </div>
+          )}
 
-          <div className="section">
-            <h3>Subscriptions</h3>
-            <div className="cards">
-              {decidedGroups
-                .filter((g: any) => g.kind === 'subscription')
-                .map((g: any) => (
-                  <RecurringCard key={g.merchantKey} g={g} decision={g._decision} onDecision={setDecision} />
-                ))}
-              {decidedGroups.filter((g: any) => g.kind === 'subscription').length === 0 && (
-                <div className="empty">No subscription items yet.</div>
-              )}
+          {tab === 'bills' && (
+            <div className="section">
+              <h3>Bills</h3>
+              <UpcomingList kind="bill" groups={decidedGroups as any} />
+              <div className="cards" style={{ marginTop: 12 }}>
+                {decidedGroups
+                  .filter((g: any) => g.kind === 'bill')
+                  .map((g: any) => (
+                    <RecurringCard
+                      key={g.merchantKey}
+                      g={g}
+                      decision={g._decision}
+                      category={g._category}
+                      onDecision={setDecision}
+                      onCategory={setCategory}
+                    />
+                  ))}
+                {decidedGroups.filter((g: any) => g.kind === 'bill').length === 0 && <div className="empty">No bill items yet.</div>}
+              </div>
             </div>
-          </div>
+          )}
 
-          <details className="section">
-            <summary>Other recurring (lower confidence)</summary>
-            <div className="cards">
-              {decidedGroups
-                .filter((g: any) => g.kind === 'unknown')
-                .map((g: any) => (
-                  <RecurringCard key={g.merchantKey} g={g} decision={g._decision} onDecision={setDecision} />
-                ))}
-              {decidedGroups.filter((g: any) => g.kind === 'unknown').length === 0 && <div className="empty">None.</div>}
+          {tab === 'subs' && (
+            <div className="section">
+              <h3>Subscriptions</h3>
+              <div className="cards">
+                {decidedGroups
+                  .filter((g: any) => g.kind === 'subscription')
+                  .sort((a: any, b: any) => b.typicalAmount - a.typicalAmount)
+                  .map((g: any) => (
+                    <RecurringCard
+                      key={g.merchantKey}
+                      g={g}
+                      decision={g._decision}
+                      category={g._category}
+                      onDecision={setDecision}
+                      onCategory={setCategory}
+                    />
+                  ))}
+                {decidedGroups.filter((g: any) => g.kind === 'subscription').length === 0 && (
+                  <div className="empty">No subscription items yet.</div>
+                )}
+              </div>
             </div>
-          </details>
+          )}
+
+          {tab === 'plan' && (
+            <div className="section">
+              <h3>Plan</h3>
+              <PlanView groups={decidedGroups as any} />
+            </div>
+          )}
+
+          {tab === 'upload' && (
+            <div className="section">
+              <h3>Other recurring (lower confidence)</h3>
+              <div className="cards">
+                {decidedGroups
+                  .filter((g: any) => g.kind === 'unknown')
+                  .map((g: any) => (
+                    <RecurringCard
+                      key={g.merchantKey}
+                      g={g}
+                      decision={g._decision}
+                      category={g._category}
+                      onDecision={setDecision}
+                      onCategory={setCategory}
+                    />
+                  ))}
+                {decidedGroups.filter((g: any) => g.kind === 'unknown').length === 0 && <div className="empty">None.</div>}
+              </div>
+            </div>
+          )}
         </section>
       )}
 
@@ -317,11 +529,15 @@ function safeCsv(s: string) {
 function RecurringCard({
   g,
   decision,
+  category,
   onDecision,
+  onCategory,
 }: {
   g: RecurringGroup
   decision: Decision
+  category?: Category
   onDecision: (merchantKey: string, d: Decision) => void
+  onCategory: (merchantKey: string, cat: Category) => void
 }) {
   const label = g.kind === 'bill' ? 'BILL' : g.kind === 'subscription' ? 'SUBSCRIPTION' : 'RECURRING'
   const due = g.usualDayOfMonth ? `Around the ${ordinal(g.usualDayOfMonth)}` : '—'
@@ -356,6 +572,21 @@ function RecurringCard({
         {pill('subscription', 'Yes: Subscription')}
         {pill('no', 'No')}
         {pill('unset', 'Reset')}
+        <select
+          className="cat"
+          value={category ?? ''}
+          onChange={(e) => {
+            const v = e.target.value as Category
+            if (v) onCategory(g.merchantKey, v)
+          }}
+        >
+          <option value="">Category…</option>
+          {DEFAULT_CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="rcardGrid">
@@ -375,6 +606,57 @@ function RecurringCard({
           {g.samples.map((s) => `${s.date}  $${round2(s.amount)}  ${s.description}`).join('\n')}
         </div>
       </details>
+    </div>
+  )
+}
+
+function UpcomingList({ kind, groups }: { kind: 'bill' | 'subscription'; groups: Array<RecurringGroup & { _decision?: Decision }> }) {
+  const items = groups
+    .filter((g: any) => g.kind === kind && g.usualDayOfMonth)
+    .slice()
+    .sort((a: any, b: any) => (a.usualDayOfMonth ?? 99) - (b.usualDayOfMonth ?? 99))
+
+  if (items.length === 0) return <div className="empty">No upcoming dates yet (needs a monthly pattern).</div>
+
+  return (
+    <div className="upcoming">
+      {items.slice(0, 8).map((g: any) => (
+        <div key={g.merchantKey} className="upItem">
+          <div>
+            <div className="merchant">{g.merchant}</div>
+            <div className="meta">Around the {ordinal(g.usualDayOfMonth)}</div>
+          </div>
+          <div className="amt">${round2(g.typicalAmount)}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PlanView({ groups }: { groups: Array<RecurringGroup & { _decision?: Decision; _category?: Category }> }) {
+  const accepted = groups.filter((g: any) => g.kind === 'bill' || g.kind === 'subscription')
+
+  const totals = new Map<string, number>()
+  for (const g of accepted) {
+    const cat = g._category ?? (g.kind === 'subscription' ? 'Subscriptions' : 'Other')
+    totals.set(cat, (totals.get(cat) ?? 0) + g.typicalAmount)
+  }
+
+  const rows = DEFAULT_CATEGORIES.map((c) => ({ category: c, amount: totals.get(c) ?? 0 }))
+
+  return (
+    <div className="plan">
+      {rows.map((r) => (
+        <div key={r.category} className="planRow">
+          <div className="merchant">{r.category}</div>
+          <div className="amt">${round2(r.amount)}</div>
+        </div>
+      ))}
+      <div className="planRow total">
+        <div className="merchant">Total planned (from recurring)</div>
+        <div className="amt">${round2(rows.reduce((s, r) => s + r.amount, 0))}</div>
+      </div>
+      <div className="small">Next: add income + manual categories to finish a true zero-based plan.</div>
     </div>
   )
 }
