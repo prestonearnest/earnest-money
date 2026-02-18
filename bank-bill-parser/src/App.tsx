@@ -226,42 +226,48 @@ export default function App() {
             <input className="search" placeholder="Filter merchants…" value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
 
-          <div className="tableWrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Merchant</th>
-                  <th>Cadence</th>
-                  <th>Typical $</th>
-                  <th>±</th>
-                  <th>#</th>
-                  <th>Usual day</th>
-                  <th>Recent samples</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((g) => (
-                  <tr key={g.merchantKey}>
-                    <td>{g.merchant}</td>
-                    <td>{g.cadence}</td>
-                    <td>${round2(g.typicalAmount)}</td>
-                    <td>${round2(g.amountMad)}</td>
-                    <td>{g.count}</td>
-                    <td>{g.usualDayOfMonth ?? '—'}</td>
-                    <td className="mono">
-                      {g.samples
-                        .map((s) => `${s.date} $${round2(s.amount)}`)
-                        .join(' · ')}
-                    </td>
-                  </tr>
+          <p className="small" style={{ marginTop: 10 }}>
+            We’ll label items as <b>BILL</b> vs <b>SUBSCRIPTION</b> using amount + cadence stability. “Due date” usually isn’t present in bank CSVs;
+            for monthly items we infer the <b>usual posting day-of-month</b>.
+          </p>
+
+          <div className="section">
+            <h3>Bills</h3>
+            <div className="cards">
+              {filtered
+                .filter((g) => g.kind === 'bill')
+                .map((g) => (
+                  <RecurringCard key={g.merchantKey} g={g} />
                 ))}
-              </tbody>
-            </table>
+              {filtered.filter((g) => g.kind === 'bill').length === 0 && <div className="empty">No strong bill candidates found.</div>}
+            </div>
           </div>
 
-          <p className="small" style={{ marginTop: 10 }}>
-            Note: “Due date” usually isn’t present in bank CSVs; for monthly bills we infer the <b>usual posting day-of-month</b>.
-          </p>
+          <div className="section">
+            <h3>Subscriptions</h3>
+            <div className="cards">
+              {filtered
+                .filter((g) => g.kind === 'subscription')
+                .map((g) => (
+                  <RecurringCard key={g.merchantKey} g={g} />
+                ))}
+              {filtered.filter((g) => g.kind === 'subscription').length === 0 && (
+                <div className="empty">No strong subscription candidates found.</div>
+              )}
+            </div>
+          </div>
+
+          <details className="section">
+            <summary>Other recurring (lower confidence)</summary>
+            <div className="cards">
+              {filtered
+                .filter((g) => g.kind === 'unknown')
+                .map((g) => (
+                  <RecurringCard key={g.merchantKey} g={g} />
+                ))}
+              {filtered.filter((g) => g.kind === 'unknown').length === 0 && <div className="empty">None.</div>}
+            </div>
+          </details>
         </section>
       )}
 
@@ -277,6 +283,49 @@ function round2(n: number) {
 function safeCsv(s: string) {
   if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
   return s
+}
+
+function RecurringCard({ g }: { g: RecurringGroup }) {
+  const label = g.kind === 'bill' ? 'BILL' : g.kind === 'subscription' ? 'SUBSCRIPTION' : 'RECURRING'
+  const due = g.usualDayOfMonth ? `Around the ${ordinal(g.usualDayOfMonth)}` : '—'
+  const rangeLow = Math.max(0, g.typicalAmount - Math.max(g.amountMad * 2, g.typicalAmount * 0.06))
+  const rangeHigh = g.typicalAmount + Math.max(g.amountMad * 2, g.typicalAmount * 0.06)
+
+  return (
+    <div className="rcard">
+      <div className="rcardTop">
+        <div>
+          <div className="merchant">{g.merchant}</div>
+          <div className="meta">{label} • {g.cadence}{g.confidence ? ` • ${Math.round(g.confidence * 100)}%` : ''}</div>
+        </div>
+        <div className="amt">${round2(g.typicalAmount)}</div>
+      </div>
+
+      <div className="rcardGrid">
+        <div>
+          <div className="k">Due date</div>
+          <div className="v">{due}</div>
+        </div>
+        <div>
+          <div className="k">Amount range</div>
+          <div className="v">${round2(rangeLow)} – ${round2(rangeHigh)}</div>
+        </div>
+      </div>
+
+      <details>
+        <summary>Details</summary>
+        <div className="mono" style={{ marginTop: 8 }}>
+          {g.samples.map((s) => `${s.date}  $${round2(s.amount)}  ${s.description}`).join('\n')}
+        </div>
+      </details>
+    </div>
+  )
+}
+
+function ordinal(n: number) {
+  const s = ['th', 'st', 'nd', 'rd']
+  const v = n % 100
+  return n + (s[(v - 20) % 10] || s[v] || s[0])
 }
 
 function Gate({ onAuthed }: { onAuthed: () => void }) {

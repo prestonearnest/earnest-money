@@ -128,6 +128,8 @@ function mad(nums: number[], med: number): number {
   return median(dev)
 }
 
+export type RecurringKind = 'bill' | 'subscription' | 'unknown'
+
 export type RecurringGroup = {
   merchant: string
   merchantKey: string
@@ -136,8 +138,36 @@ export type RecurringGroup = {
   typicalAmount: number
   amountMad: number
   usualDayOfMonth?: number
-  nextExpected?: string
+  kind: RecurringKind
+  confidence: number // 0..1
   samples: { date: string; amount: number; description: string }[]
+}
+
+function clamp01(n: number) {
+  return Math.max(0, Math.min(1, n))
+}
+
+function classifyRecurring(cadence: RecurringGroup['cadence'], typicalAmount: number, amountMad: number, count: number): { kind: RecurringKind; confidence: number } {
+  // Heuristics (since bank exports usually lack category):
+  // - Bills: typically monthly, higher $, low variance
+  // - Subscriptions: typically monthly, lower $, low variance
+  // - Unknown: anything else
+
+  const stable = amountMad <= Math.max(2, typicalAmount * 0.08)
+  const monthly = cadence === 'monthly'
+
+  let kind: RecurringKind = 'unknown'
+  if (monthly && stable) {
+    if (typicalAmount >= 40) kind = 'bill'
+    else kind = 'subscription'
+  }
+
+  // confidence: based on stability + repeats + cadence match
+  const cadenceScore = monthly ? 0.45 : cadence === 'weekly' || cadence === 'biweekly' ? 0.25 : cadence === 'annual' ? 0.2 : 0
+  const stabilityScore = stable ? 0.35 : 0.1
+  const countScore = clamp01((count - 2) / 6) * 0.2
+
+  return { kind, confidence: clamp01(cadenceScore + stabilityScore + countScore) }
 }
 
 export function detectRecurring(txs: Tx[], opts?: { minCount?: number; maxGroups?: number }) {
@@ -185,6 +215,8 @@ export function detectRecurring(txs: Tx[], opts?: { minCount?: number; maxGroups
 
     const merchant = titleCase(key)
 
+    const { kind, confidence } = classifyRecurring(cadence, typicalAmount, amountMad, arr.length)
+
     out.push({
       merchant,
       merchantKey: key,
@@ -193,6 +225,8 @@ export function detectRecurring(txs: Tx[], opts?: { minCount?: number; maxGroups
       typicalAmount,
       amountMad,
       usualDayOfMonth,
+      kind,
+      confidence,
       samples: arr
         .slice(-8)
         .reverse()
