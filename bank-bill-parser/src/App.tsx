@@ -13,13 +13,19 @@ type DecisionsMap = Record<string, Decision>
 
 type CategoryMap = Record<string, Category>
 
-type Tab = 'review' | 'bills' | 'subs' | 'plan' | 'upload'
+type Tab = 'review' | 'calendar' | 'bills' | 'subs' | 'plan' | 'upload'
+
+type BudgetState = {
+  income: number
+  plannedByCategory: Record<string, number>
+}
 
 const GATE_PASSWORD = import.meta.env.VITE_GATE_PASSWORD as string | undefined
 const LS_KEY = 'bbp_authed_v1'
 const LS_DECISIONS = 'bbp_decisions_v1'
 const LS_CATEGORIES = 'bbp_categories_v1'
 const LS_TAB = 'bbp_tab_v1'
+const LS_BUDGET = 'bbp_budget_v1'
 
 export default function App() {
   const [authed, setAuthed] = useState(() => {
@@ -54,6 +60,28 @@ export default function App() {
       return {}
     }
   })
+
+  const [budget, setBudget] = useState<BudgetState>(() => {
+    try {
+      const b = JSON.parse(localStorage.getItem(LS_BUDGET) ?? 'null') as BudgetState | null
+      if (b && typeof b.income === 'number' && b.plannedByCategory) return b
+    } catch {}
+    const plannedByCategory: Record<string, number> = {}
+    for (const c of DEFAULT_CATEGORIES) plannedByCategory[c] = 0
+    return { income: 0, plannedByCategory }
+  })
+
+  function setIncome(n: number) {
+    const next = { ...budget, income: n }
+    setBudget(next)
+    localStorage.setItem(LS_BUDGET, JSON.stringify(next))
+  }
+
+  function setPlanned(cat: string, n: number) {
+    const next = { ...budget, plannedByCategory: { ...budget.plannedByCategory, [cat]: n } }
+    setBudget(next)
+    localStorage.setItem(LS_BUDGET, JSON.stringify(next))
+  }
 
   function setDecision(key: string, d: Decision) {
     const next = { ...decisions, [key]: d }
@@ -181,6 +209,7 @@ export default function App() {
     const payload = {
       decisions,
       categories: categoryMap,
+      budget,
       updatedAt: new Date().toISOString(),
     }
 
@@ -206,6 +235,10 @@ export default function App() {
     if (p.categories) {
       setCategoryMap(p.categories)
       localStorage.setItem(LS_CATEGORIES, JSON.stringify(p.categories))
+    }
+    if (p.budget) {
+      setBudget(p.budget)
+      localStorage.setItem(LS_BUDGET, JSON.stringify(p.budget))
     }
     alert('Loaded from cloud.')
   }
@@ -251,6 +284,7 @@ export default function App() {
           {(
             [
               { id: 'review', label: 'Budget' },
+              { id: 'calendar', label: 'Calendar' },
               { id: 'bills', label: 'Bills' },
               { id: 'subs', label: 'Subscriptions' },
               { id: 'plan', label: 'Plan' },
@@ -492,15 +526,19 @@ export default function App() {
             </div>
           )}
 
-          {tab === 'bills' && (
+          {tab === 'calendar' && (
             <div className="section">
               <h3>Upcoming (next 14 days)</h3>
-              <UpcomingList kind="bill" groups={decidedGroups as any} />
+              <UpcomingCombined groups={decidedGroups as any} />
 
-              <h3 style={{ marginTop: 16 }}>Bills calendar</h3>
+              <h3 style={{ marginTop: 16 }}>Monthly calendar</h3>
               <BillsCalendar month={month} groups={decidedGroups as any} />
+            </div>
+          )}
 
-              <h3 style={{ marginTop: 16 }}>All bills</h3>
+          {tab === 'bills' && (
+            <div className="section">
+              <h3>Bills</h3>
               <div className="cards" style={{ marginTop: 12 }}>
                 {decidedGroups
                   .filter((g: any) => g.kind === 'bill')
@@ -545,8 +583,8 @@ export default function App() {
 
           {tab === 'plan' && (
             <div className="section">
-              <h3>Plan</h3>
-              <PlanView groups={decidedGroups as any} />
+              <h3>Monthly plan (zero-based)</h3>
+              <BudgetBuilder budget={budget} onIncome={setIncome} onPlanned={setPlanned} groups={decidedGroups as any} />
             </div>
           )}
 
@@ -579,6 +617,7 @@ export default function App() {
         {(
           [
             { id: 'review', label: 'Budget' },
+            { id: 'calendar', label: 'Calendar' },
             { id: 'bills', label: 'Bills' },
             { id: 'subs', label: 'Subs' },
             { id: 'plan', label: 'Plan' },
@@ -689,7 +728,13 @@ function RecurringCard({
   )
 }
 
-function UpcomingList({ kind, groups }: { kind: 'bill' | 'subscription'; groups: Array<RecurringGroup & { _decision?: Decision }> }) {
+function UpcomingList({
+  kind,
+  groups,
+}: {
+  kind: 'bill' | 'subscription'
+  groups: Array<RecurringGroup & { _decision?: Decision }>
+}) {
   const now = new Date()
   const today = now.getDate()
 
@@ -697,26 +742,62 @@ function UpcomingList({ kind, groups }: { kind: 'bill' | 'subscription'; groups:
     .filter((g: any) => g.kind === kind && g.usualDayOfMonth)
     .map((g: any) => {
       const d = g.usualDayOfMonth as number
-      // crude: upcoming within 14 days in the current month
       const delta = d >= today ? d - today : 999
       return { ...g, _delta: delta }
     })
     .filter((g: any) => g._delta <= 14)
     .sort((a: any, b: any) => a._delta - b._delta)
 
-  if (items.length === 0) return <div className="empty">No bills due in the next 14 days (based on inferred posting day).</div>
+  return items
+}
+
+function UpcomingCombined({ groups }: { groups: Array<RecurringGroup & { _decision?: Decision }> }) {
+  const bills = UpcomingList({ kind: 'bill', groups } as any) as any[]
+  const subs = UpcomingList({ kind: 'subscription', groups } as any) as any[]
 
   return (
     <div className="upcoming">
-      {items.slice(0, 8).map((g: any) => (
-        <div key={g.merchantKey} className="upItem">
+      <div className="upBox">
+        <div className="upHdr">
           <div>
-            <div className="merchant">{g.merchant}</div>
-            <div className="meta">Around the {ordinal(g.usualDayOfMonth)}</div>
+            <div className="merchant">Bills</div>
+            <div className="meta">Next 14 days</div>
           </div>
-          <div className="amt">${round2(g.typicalAmount)}</div>
+          <div className="amt">{bills.length}</div>
         </div>
-      ))}
+        {bills.length === 0 ? (
+          <div className="empty" style={{ marginTop: 10 }}>None due soon.</div>
+        ) : (
+          bills.slice(0, 4).map((g: any) => (
+            <div key={g.merchantKey} className="upRow">
+              <span className="calMerchant">{g.merchant}</span>
+              <span className="meta">{ordinal(g.usualDayOfMonth)}</span>
+              <span className="calAmt">${round2(g.typicalAmount)}</span>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="upBox">
+        <div className="upHdr">
+          <div>
+            <div className="merchant">Subscriptions</div>
+            <div className="meta">Next 14 days</div>
+          </div>
+          <div className="amt">{subs.length}</div>
+        </div>
+        {subs.length === 0 ? (
+          <div className="empty" style={{ marginTop: 10 }}>None due soon.</div>
+        ) : (
+          subs.slice(0, 4).map((g: any) => (
+            <div key={g.merchantKey} className="upRow">
+              <span className="calMerchant">{g.merchant}</span>
+              <span className="meta">{ordinal(g.usualDayOfMonth)}</span>
+              <span className="calAmt">${round2(g.typicalAmount)}</span>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   )
 }
@@ -726,14 +807,14 @@ function BillsCalendar({ month, groups }: { month: Date; groups: Array<Recurring
   const daysInMonth = getDaysInMonth(month)
   const startWeekday = getDay(start) // 0=Sun
 
-  const byDay = new Map<number, Array<{ merchant: string; amount: number }>>()
+  const byDay = new Map<number, Array<{ merchant: string; amount: number; kind: 'bill' | 'subscription' }>>()
   for (const g of groups as any[]) {
-    if (g.kind !== 'bill') continue
+    if (g.kind !== 'bill' && g.kind !== 'subscription') continue
     if (g.cadence !== 'monthly') continue
     if (!g.usualDayOfMonth) continue
     const d = Math.min(daysInMonth, Math.max(1, g.usualDayOfMonth))
     const arr = byDay.get(d) ?? []
-    arr.push({ merchant: g.merchant, amount: g.typicalAmount })
+    arr.push({ merchant: g.merchant, amount: g.typicalAmount, kind: g.kind })
     byDay.set(d, arr)
   }
 
@@ -763,7 +844,7 @@ function BillsCalendar({ month, groups }: { month: Date; groups: Array<Recurring
             <div key={idx} className="calCell">
               <div className="calDay">{c.day}</div>
               {items.slice(0, 3).map((it, i) => (
-                <div key={i} className="calItem">
+                <div key={i} className={`calItem ${it.kind === 'subscription' ? 'sub' : 'bill'}`}>
                   <span className="calMerchant">{it.merchant}</span>
                   <span className="calAmt">${round2(it.amount)}</span>
                 </div>
@@ -777,32 +858,110 @@ function BillsCalendar({ month, groups }: { month: Date; groups: Array<Recurring
   )
 }
 
-function PlanView({ groups }: { groups: Array<RecurringGroup & { _decision?: Decision; _category?: Category }> }) {
+function BudgetBuilder({
+  budget,
+  onIncome,
+  onPlanned,
+  groups,
+}: {
+  budget: BudgetState
+  onIncome: (n: number) => void
+  onPlanned: (cat: string, n: number) => void
+  groups: Array<RecurringGroup & { _decision?: Decision; _category?: Category }>
+}) {
   const accepted = groups.filter((g: any) => g.kind === 'bill' || g.kind === 'subscription')
 
-  const totals = new Map<string, number>()
-  for (const g of accepted) {
+  const suggested = new Map<string, number>()
+  for (const g of accepted as any[]) {
     const cat = g._category ?? (g.kind === 'subscription' ? 'Subscriptions' : 'Other')
-    totals.set(cat, (totals.get(cat) ?? 0) + g.typicalAmount)
+    suggested.set(cat, (suggested.get(cat) ?? 0) + g.typicalAmount)
   }
 
-  const rows = DEFAULT_CATEGORIES.map((c) => ({ category: c, amount: totals.get(c) ?? 0 }))
+  const plannedTotal = DEFAULT_CATEGORIES.reduce((sum, c) => sum + (Number(budget.plannedByCategory[c] ?? 0) || 0), 0)
+  const remaining = (Number(budget.income) || 0) - plannedTotal
+
+  const status = remaining === 0 ? 'Fully planned' : remaining > 0 ? 'Remaining to allocate' : 'Over planned'
 
   return (
-    <div className="plan">
-      {rows.map((r) => (
-        <div key={r.category} className="planRow">
-          <div className="merchant">{r.category}</div>
-          <div className="amt">${round2(r.amount)}</div>
+    <>
+      <div className="dash" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))' }}>
+        <div className="dashCard">
+          <div className="k">Income</div>
+          <div className="dashMain">
+            <input
+              className="money"
+              inputMode="decimal"
+              value={budget.income ? String(budget.income) : ''}
+              placeholder="0"
+              onChange={(e) => onIncome(moneyToNumber(e.target.value))}
+            />
+          </div>
+          <div className="small">Monthly take-home</div>
         </div>
-      ))}
-      <div className="planRow total">
-        <div className="merchant">Total planned (from recurring)</div>
-        <div className="amt">${round2(rows.reduce((s, r) => s + r.amount, 0))}</div>
+        <div className="dashCard">
+          <div className="k">Planned</div>
+          <div className="dashMain">${round2(plannedTotal)}</div>
+          <div className="small">All categories</div>
+        </div>
+        <div className={`dashCard ${remaining === 0 ? 'primary' : ''}`}>
+          <div className="k">{status}</div>
+          <div className="dashMain" style={{ color: remaining < 0 ? '#b91c1c' : undefined }}>
+            ${round2(Math.abs(remaining))}
+          </div>
+          <div className="small">Target is $0 remaining</div>
+        </div>
       </div>
-      <div className="small">Next: add income + manual categories to finish a true zero-based plan.</div>
-    </div>
+
+      <div className="row" style={{ marginTop: 12, justifyContent: 'space-between' }}>
+        <div className="small">Tip: start by applying your recurring bills/subscriptions, then fill the rest.</div>
+        <button
+          className="btn secondary"
+          type="button"
+          onClick={() => {
+            for (const c of DEFAULT_CATEGORIES) {
+              const s = suggested.get(c) ?? 0
+              if (s > 0) onPlanned(c, roundMoney(s))
+            }
+          }}
+        >
+          Apply recurring suggestions
+        </button>
+      </div>
+
+      <div className="plan">
+        {DEFAULT_CATEGORIES.map((c) => {
+          const planned = Number(budget.plannedByCategory[c] ?? 0) || 0
+          const sug = suggested.get(c) ?? 0
+          return (
+            <div key={c} className="planRow">
+              <div>
+                <div className="merchant">{c}</div>
+                <div className="meta">Suggested: ${round2(sug)}</div>
+              </div>
+              <div className="row" style={{ justifyContent: 'flex-end' }}>
+                <input
+                  className="moneySmall"
+                  inputMode="decimal"
+                  value={planned ? String(planned) : ''}
+                  placeholder="0"
+                  onChange={(e) => onPlanned(c, moneyToNumber(e.target.value))}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </>
   )
+}
+
+function moneyToNumber(s: string) {
+  const n = Number(String(s).replace(/[^0-9.\-]/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
+function roundMoney(n: number) {
+  return Math.round(n * 100) / 100
 }
 
 function Dashboard({ groups }: { groups: Array<RecurringGroup & { _decision?: Decision }> }) {

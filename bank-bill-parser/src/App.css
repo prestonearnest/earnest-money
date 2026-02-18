@@ -103,7 +103,10 @@ input[type=file]{padding:12px}
 
 .upcoming{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
 @media (max-width: 820px){.upcoming{grid-template-columns:1fr}}
-.upItem{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:flex-start;box-shadow:var(--shadow)}
+.upBox{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;box-shadow:var(--shadow)}
+.upHdr{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.upRow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border)}
+.upRow:first-of-type{border-top:0}
 
 .cal{margin-top:10px}
 .calHeader{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-bottom:8px}
@@ -113,6 +116,8 @@ input[type=file]{padding:12px}
 .calCell.muted{opacity:.35}
 .calDay{font-weight:950;font-size:12px;color:var(--muted);margin-bottom:6px}
 .calItem{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--text);padding:2px 0}
+.calItem.bill{border-left:3px solid rgba(47,179,90,.55);padding-left:6px}
+.calItem.sub{border-left:3px solid rgba(59,130,246,.55);padding-left:6px}
 .calMerchant{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:110px}
 .calAmt{color:var(--muted)}
 .calMore{color:var(--muted);font-size:11px;margin-top:3px}
