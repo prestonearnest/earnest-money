@@ -26,6 +26,12 @@ export default function App() {
     return localStorage.getItem(LS_KEY) === '1'
   })
 
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('bbp_theme_v1') as any) || 'light')
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('bbp_theme_v1', theme)
+  }, [theme])
+
   const [tab, setTab] = useState<Tab>(() => (localStorage.getItem(LS_TAB) as Tab) || 'review')
 
   const [decisions, setDecisions] = useState<DecisionsMap>(() => {
@@ -262,6 +268,11 @@ export default function App() {
           </header>
 
           <section className="topbar">
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn secondary" type="button" onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}>
+                {theme === 'light' ? 'Dark' : 'Light'}
+              </button>
+            </div>
         <div className="tabs">
           {(
             [
