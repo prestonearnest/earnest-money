@@ -4,14 +4,33 @@ import { detectRecurring, guessColumnMap, parseCsvFiles, type ColumnMap, type Re
 
 type Stage = 'upload' | 'map' | 'results'
 
+type Decision = 'bill' | 'subscription' | 'no' | 'unset'
+
+type DecisionsMap = Record<string, Decision>
+
 const GATE_PASSWORD = import.meta.env.VITE_GATE_PASSWORD as string | undefined
 const LS_KEY = 'bbp_authed_v1'
+const LS_DECISIONS = 'bbp_decisions_v1'
 
 export default function App() {
   const [authed, setAuthed] = useState(() => {
     if (!GATE_PASSWORD) return true
     return localStorage.getItem(LS_KEY) === '1'
   })
+
+  const [decisions, setDecisions] = useState<DecisionsMap>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(LS_DECISIONS) ?? '{}') as DecisionsMap
+    } catch {
+      return {}
+    }
+  })
+
+  function setDecision(key: string, d: Decision) {
+    const next = { ...decisions, [key]: d }
+    setDecisions(next)
+    localStorage.setItem(LS_DECISIONS, JSON.stringify(next))
+  }
 
   const [stage, setStage] = useState<Stage>('upload')
   const [files, setFiles] = useState<File[]>([])
@@ -29,6 +48,14 @@ export default function App() {
     if (!q) return groups
     return groups.filter((g) => g.merchant.toLowerCase().includes(q) || g.merchantKey.includes(q))
   }, [groups, query])
+
+  const decidedGroups = useMemo(() => {
+    return filtered.map((g) => {
+      const d = decisions[g.merchantKey] ?? 'unset'
+      const kind = d === 'bill' ? 'bill' : d === 'subscription' ? 'subscription' : d === 'no' ? 'unknown' : g.kind
+      return { ...g, kind, _decision: d }
+    })
+  }, [filtered, decisions])
 
   async function readFirstHeaders(file: File) {
     const text = await file.text()
@@ -222,37 +249,39 @@ export default function App() {
             </div>
           </div>
 
+          <Dashboard groups={decidedGroups as any} />
+
           <div className="row" style={{ marginTop: 12 }}>
             <input className="search" placeholder="Filter merchants…" value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
 
           <p className="small" style={{ marginTop: 10 }}>
-            We’ll label items as <b>BILL</b> vs <b>SUBSCRIPTION</b> using amount + cadence stability. “Due date” usually isn’t present in bank CSVs;
+            Tap <b>Yes: Bill</b> / <b>Yes: Subscription</b> / <b>No</b> on each card to confirm. “Due date” usually isn’t present in bank CSVs;
             for monthly items we infer the <b>usual posting day-of-month</b>.
           </p>
 
           <div className="section">
             <h3>Bills</h3>
             <div className="cards">
-              {filtered
-                .filter((g) => g.kind === 'bill')
-                .map((g) => (
-                  <RecurringCard key={g.merchantKey} g={g} />
+              {decidedGroups
+                .filter((g: any) => g.kind === 'bill')
+                .map((g: any) => (
+                  <RecurringCard key={g.merchantKey} g={g} decision={g._decision} onDecision={setDecision} />
                 ))}
-              {filtered.filter((g) => g.kind === 'bill').length === 0 && <div className="empty">No strong bill candidates found.</div>}
+              {decidedGroups.filter((g: any) => g.kind === 'bill').length === 0 && <div className="empty">No bill items yet.</div>}
             </div>
           </div>
 
           <div className="section">
             <h3>Subscriptions</h3>
             <div className="cards">
-              {filtered
-                .filter((g) => g.kind === 'subscription')
-                .map((g) => (
-                  <RecurringCard key={g.merchantKey} g={g} />
+              {decidedGroups
+                .filter((g: any) => g.kind === 'subscription')
+                .map((g: any) => (
+                  <RecurringCard key={g.merchantKey} g={g} decision={g._decision} onDecision={setDecision} />
                 ))}
-              {filtered.filter((g) => g.kind === 'subscription').length === 0 && (
-                <div className="empty">No strong subscription candidates found.</div>
+              {decidedGroups.filter((g: any) => g.kind === 'subscription').length === 0 && (
+                <div className="empty">No subscription items yet.</div>
               )}
             </div>
           </div>
@@ -260,12 +289,12 @@ export default function App() {
           <details className="section">
             <summary>Other recurring (lower confidence)</summary>
             <div className="cards">
-              {filtered
-                .filter((g) => g.kind === 'unknown')
-                .map((g) => (
-                  <RecurringCard key={g.merchantKey} g={g} />
+              {decidedGroups
+                .filter((g: any) => g.kind === 'unknown')
+                .map((g: any) => (
+                  <RecurringCard key={g.merchantKey} g={g} decision={g._decision} onDecision={setDecision} />
                 ))}
-              {filtered.filter((g) => g.kind === 'unknown').length === 0 && <div className="empty">None.</div>}
+              {decidedGroups.filter((g: any) => g.kind === 'unknown').length === 0 && <div className="empty">None.</div>}
             </div>
           </details>
         </section>
@@ -285,20 +314,48 @@ function safeCsv(s: string) {
   return s
 }
 
-function RecurringCard({ g }: { g: RecurringGroup }) {
+function RecurringCard({
+  g,
+  decision,
+  onDecision,
+}: {
+  g: RecurringGroup
+  decision: Decision
+  onDecision: (merchantKey: string, d: Decision) => void
+}) {
   const label = g.kind === 'bill' ? 'BILL' : g.kind === 'subscription' ? 'SUBSCRIPTION' : 'RECURRING'
   const due = g.usualDayOfMonth ? `Around the ${ordinal(g.usualDayOfMonth)}` : '—'
   const rangeLow = Math.max(0, g.typicalAmount - Math.max(g.amountMad * 2, g.typicalAmount * 0.06))
   const rangeHigh = g.typicalAmount + Math.max(g.amountMad * 2, g.typicalAmount * 0.06)
+
+  const pill = (d: Decision, text: string) => (
+    <button
+      className={`pill ${decision === d ? 'active' : ''}`}
+      onClick={() => onDecision(g.merchantKey, d)}
+      type="button"
+    >
+      {text}
+    </button>
+  )
 
   return (
     <div className="rcard">
       <div className="rcardTop">
         <div>
           <div className="merchant">{g.merchant}</div>
-          <div className="meta">{label} • {g.cadence}{g.confidence ? ` • ${Math.round(g.confidence * 100)}%` : ''}</div>
+          <div className="meta">
+            {label} • {g.cadence}
+            {g.confidence ? ` • ${Math.round(g.confidence * 100)}%` : ''}
+          </div>
         </div>
         <div className="amt">${round2(g.typicalAmount)}</div>
+      </div>
+
+      <div className="pills">
+        {pill('bill', 'Yes: Bill')}
+        {pill('subscription', 'Yes: Subscription')}
+        {pill('no', 'No')}
+        {pill('unset', 'Reset')}
       </div>
 
       <div className="rcardGrid">
@@ -318,6 +375,35 @@ function RecurringCard({ g }: { g: RecurringGroup }) {
           {g.samples.map((s) => `${s.date}  $${round2(s.amount)}  ${s.description}`).join('\n')}
         </div>
       </details>
+    </div>
+  )
+}
+
+function Dashboard({ groups }: { groups: Array<RecurringGroup & { _decision?: Decision }> }) {
+  const acceptedBills = groups.filter((g) => g.kind === 'bill')
+  const acceptedSubs = groups.filter((g) => g.kind === 'subscription')
+
+  const billTotal = acceptedBills.reduce((sum, g) => sum + g.typicalAmount, 0)
+  const subTotal = acceptedSubs.reduce((sum, g) => sum + g.typicalAmount, 0)
+  const grandTotal = billTotal + subTotal
+
+  return (
+    <div className="dash">
+      <div className="dashCard">
+        <div className="k">Bills / month</div>
+        <div className="dashMain">${round2(billTotal)}</div>
+        <div className="small">{acceptedBills.length} items</div>
+      </div>
+      <div className="dashCard">
+        <div className="k">Subscriptions / month</div>
+        <div className="dashMain">${round2(subTotal)}</div>
+        <div className="small">{acceptedSubs.length} items</div>
+      </div>
+      <div className="dashCard primary">
+        <div className="k">Grand total / month</div>
+        <div className="dashMain">${round2(grandTotal)}</div>
+        <div className="small">Bills + subscriptions</div>
+      </div>
     </div>
   )
 }
